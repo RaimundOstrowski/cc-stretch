@@ -75,6 +75,12 @@ never lose your place.
 ## What else it does
 
 - **Stretches nest.** A long form can hold more stretches.
+- **Ask for more with ✦.** An open stretch with nothing left inside it to open ends in `« ✦`. Click
+  `✦` and Claude writes more on that part, in stretchtext too, and it grows in place after it. `✦`
+  is bold, in its own colour and not underlined, because it runs a query instead of showing words
+  that are already there: one model call over your session, mostly served from the prompt cache.
+  Point at it first and the text it would send is lit. The answer stays out of the transcript, so
+  your next message tells Claude what it added.
 - **Streaming stays clean.** While a reply streams, stretches already show as their short forms.
 - **Letters for the keyboard.** In the terminal's fullscreen layout, alt+↓ or ctrl+↓ puts a letter
   over each closed stretch in the latest three replies on screen that hold one (up to 26), and
@@ -115,6 +121,9 @@ never lose your place.
 - Claude writes every level up front, so a reply costs about as many tokens as before. You read
   less; you don't pay less.
 - The `{{short|long}}` markup shows as raw text wherever the plugin isn't loaded.
+- An answer `✦` brought is kept with the session's plugin state, not in the transcript. A resumed
+  session may not show it, and `/compact` keeps only the note your next message carried. `✦` works
+  once Claude has answered in the session, so not in a resumed session before its first new reply.
 - Built on Claude Code's function-hook plugin API, which is early access and changes between
   releases. Checked in the terminal on macOS with Claude Code 2.1.292 to 2.1.294 and 2.1.300 to
   2.1.302, and in the Claude desktop app with 2.1.295. On Linux, a reader reports clicks working with

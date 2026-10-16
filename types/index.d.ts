@@ -38,6 +38,14 @@ declare module 'claude-code' {
        * none of its flushes is pending; null for a message left as written.
        */
       streams: Record<string, { open: { isLong: boolean }[]; fence: string | undefined; span: string | undefined } | null>
+      /**
+       * Per paragraph of a reply drawn by a Client, as `open`: what ✦ asked for each stretch, keyed
+       * by the stretch's key. A running query, its answer as stretchtext, or a failed query; `ask`
+       * names the press that asked.
+       */
+      deepened: StateFamily<Record<string, { status: 'running'; ask: number } | { status: 'done'; text: string } | { status: 'failed'; ask: number }>>
+      /** The answers ✦ added since the reader's last prompt, each after the last words of its section. */
+      added: { after: string; text: string }[]
     }
   }
 }

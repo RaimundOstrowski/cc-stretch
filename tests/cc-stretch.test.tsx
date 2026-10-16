@@ -6,7 +6,7 @@ import { grow } from '../hooks/grow'
 import { contrastOn } from '../hooks/contrast'
 import { DEFAULT_LOOK, lookOf, marksSetting } from '../hooks/look'
 import { layout, link, linkAt, tint, widthOf } from '../hooks/layout'
-import { closeAfter, hideLongForms, newStreamState, paragraphsOf, parse, stretches } from '../hooks/parse'
+import { canDeepen, closeAfter, hideLongForms, newStreamState, paragraphsOf, parse, sectionOf, stretches, withAdded } from '../hooks/parse'
 import Reply from '../hooks/reply'
 
 const REPLY = [
@@ -563,7 +563,8 @@ test('a press grows a stretch in place, nested ones too, and « shrinks it back'
 
   await pressOn(ui, ', set in one file')
   await ui.advance(2000)
-  expect(await textIn(ui)).toContain(', set in ci/cache.ts « «.')
+  // Open with nothing left inside it to open, the inner stretch ends in ✦.
+  expect(await textIn(ui)).toContain(', set in ci/cache.ts « ✦ «.')
 
   await pressOn(ui, '«', { last: true })
   await ui.advance(300)
@@ -877,8 +878,8 @@ test('in the terminal, a « after a rule or a code fence goes on its own line an
   await ui.advance(2000)
   const rows = await rowsOf(ui)
   expect(rows.at(-2)).toMatch(/^─+$/)
-  expect(rows.at(-1)).toBe('«')
-  expect((await rowsOf(ui, 'paragraph-1')).slice(-2)).toEqual(['  key: 1', '«'])
+  expect(rows.at(-1)).toBe('« ✦')
+  expect((await rowsOf(ui, 'paragraph-1')).slice(-2)).toEqual(['  key: 1', '« ✦'])
   await pressOn(ui, '«', { last: true })
   await ui.advance(2000)
   expect(await textIn(ui)).toBe('Status.')
@@ -893,7 +894,7 @@ test('the words a stretch adds take its colour, faded once another opens or the 
   const colourOf = async (text: string) => (await ui.findAll({ type: 'Text', in: FIRST })).find(piece => piece.text?.trim() === text)?.props.color
   await pressOn(ui, 'cat')
   await ui.advance(2000)
-  expect(await textIn(ui)).toBe('One cat, black, « and dog here.')
+  expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog here.')
   expect(await colourOf('black,')).toBe('#ffdd77')
   expect(await colourOf('cat,')).toBeUndefined()
 
@@ -1898,5 +1899,263 @@ describe('the style toolbar', () => {
     expect(await phraseProps(ui)).not.toHaveProperty('bold')
     await ui.unmount()
     await toolbar.unmount()
+  })
+})
+
+describe('✦ asks for more', () => {
+  const PETS = 'One {{cat|cat, black,}} and {{dog|dog, brown,{{ and old| and old, at twelve}}}} here.'
+  const USAGE = { input_tokens: 10, output_tokens: 20, cache_read_input_tokens: 900, cache_creation_input_tokens: 0 }
+  const SPINNER = /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u
+  /** Answers each fork with `text` once the test calls `release`, and keeps each prompt. */
+  const answering = (on: On, text: string, prompts: string[] = []) => {
+    const waiting: (() => void)[] = []
+    on('model.fork', async (_, e) => {
+      prompts.push(e.prompt)
+      await new Promise<void>(resolve => waiting.push(resolve))
+      return { value: { isAnswered: true, text, usage: USAGE } }
+    })
+    return { release: () => waiting.splice(0).forEach(resolve => resolve()) }
+  }
+  /** Keeps each toast and status line the plugin shows. */
+  const shows = (on: On) => {
+    const toasts: string[] = []
+    const statuses: (string | undefined)[] = []
+    on('ui.toast', (_, e) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    on('ui.status', (_, e) => {
+      statuses.push(e.text)
+      return { value: undefined }
+    })
+    return { toasts, statuses }
+  }
+  /** Where `phrase` is drawn, in the Client's cells. */
+  const cellOf = async (ui: Mounted, phrase: string, key = FIRST) => {
+    const rows = await rowsOf(ui, key)
+    const y = rows.findIndex(row => row.includes(phrase))
+    return { x: widthOf((rows[y] ?? '').slice(0, (rows[y] ?? '').indexOf(phrase))), y }
+  }
+  /** Presses the `n`th (from 0) place `phrase` is drawn, in reading order. */
+  const pressNth = async (ui: Mounted, phrase: string, n: number) => {
+    let seen = 0
+    for (const [y, row] of (await rowsOf(ui)).entries()) {
+      for (let at = row.indexOf(phrase); at !== -1; at = row.indexOf(phrase, at + 1)) {
+        if (seen++ < n) continue
+        const x = widthOf(row.slice(0, at))
+        await ui.pointer({ type: 'down', x, y, button: 'left', in: FIRST })
+        await ui.pointer({ type: 'up', x, y, button: 'left', in: FIRST })
+        return
+      }
+    }
+    throw new Error(`"${phrase}" is drawn fewer than ${n + 1} times`)
+  }
+  const litText = async (ui: Mounted) =>
+    (await ui.findAll({ type: 'Text', in: FIRST }))
+      .filter(piece => piece.props.backgroundColor !== undefined)
+      .map(piece => piece.text)
+      .join('')
+
+  test('an open stretch with nothing left inside it to open ends in ✦, which is not drawn as a link', async $ => {
+    const ui = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(ui, 'cat')
+    await pressOn(ui, 'dog')
+    await ui.advance(2000)
+    // dog still holds a stretch to open, so only cat ends in ✦.
+    expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog, brown, and old « here.')
+    const star = (await ui.findAll({ type: 'Text', in: FIRST })).find(piece => piece.text === '✦')
+    expect(star?.props).toMatchObject({ color: 'suggestion', bold: true })
+    expect(star?.props).not.toHaveProperty('underline')
+
+    await pressOn(ui, 'and old')
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog, brown, and old, at twelve « ✦ « here.')
+    await ui.unmount()
+  })
+
+  test('a press on ✦ asks Claude once, and the answer grows in place after a ✦ of its own', async ($, on) => {
+    shows(on)
+    const prompts: string[] = []
+    const fork = answering(on, 'The cat is {{nine|nine years old, and deaf}}.', prompts)
+    const ui = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(ui, 'dog')
+    await ui.advance(2000)
+    await pressOn(ui, 'and old')
+    await ui.advance(2000)
+    await pressOn(ui, '✦')
+    // While the query runs, its ✦ is a spinner, and a press on it asks nothing more.
+    expect(await textIn(ui)).toMatch(new RegExp(`^One cat and dog, brown, and old, at twelve « ${SPINNER.source} « here\\.$`, 'u'))
+    await ui.advance(500)
+    await pressOn(ui, SPINNER.exec(await textIn(ui))?.[0] ?? '✦')
+    expect(prompts).toHaveLength(1)
+    expect(prompts[0]).toContain('<part>\nand old, at twelve\n</part>')
+    expect(prompts[0]).toContain('It sits inside the stretches "dog".')
+
+    // The answer comes back once the frame after the release has run; then it grows.
+    fork.release()
+    await ui.advance(16)
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('One cat and dog, brown, and old, at twelve ✦ The cat is nine. « « « here.')
+    // The answer's words take the colour of ✦, apart from the colours opened stretches take.
+    const pieces = await ui.findAll({ type: 'Text', in: FIRST })
+    expect(pieces.find(piece => piece.props.wrap === undefined && piece.text?.includes('The cat is'))?.props).toMatchObject({ color: 'suggestion' })
+
+    // The answer's own stretches open, and its innermost one ends in ✦ again.
+    await pressOn(ui, 'nine')
+    await ui.advance(2000)
+    expect(await textIn(ui)).toContain('The cat is nine years old, and deaf « ✦.')
+
+    // Closed, the answer is its ✦, which opens it again with no new query.
+    await pressNth(ui, '«', 1)
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('One cat and dog, brown, and old, at twelve ✦ « « here.')
+    await pressOn(ui, '✦')
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('One cat and dog, brown, and old, at twelve ✦ The cat is nine. « « « here.')
+    expect(prompts).toHaveLength(1)
+    await ui.unmount()
+  })
+
+  test('the pointer on ✦ lights the text it would send and says what a press does', async ($, on) => {
+    const { statuses } = shows(on)
+    const ui = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(ui, 'cat')
+    await ui.advance(2000)
+    expect(await litText(ui)).toBe('')
+
+    const star = await cellOf(ui, '✦')
+    await ui.pointer({ type: 'move', ...star, in: FIRST })
+    expect(await litText(ui)).toBe('cat, black,')
+    expect(statuses.at(-1)).toContain('one model call')
+    // Lighting it moves nothing.
+    expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog here.')
+
+    await ui.pointer({ type: 'move', x: 0, y: star.y, in: FIRST })
+    expect(await litText(ui)).toBe('')
+    expect(statuses.at(-1)).toBeUndefined()
+    await ui.unmount()
+  })
+
+  test('a query that fails says so and leaves ✦ to press again', async ($, on) => {
+    const { toasts } = shows(on)
+    let calls = 0
+    on('model.fork', () => {
+      calls++
+      return {
+        value: calls === 1 ? { isAnswered: false, reason: 'nothing-to-fork' } : { isAnswered: true, text: '{{Black|Black all over}} since birth.', usage: USAGE },
+      }
+    })
+    const ui = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(ui, 'cat')
+    await ui.advance(2000)
+    await pressOn(ui, '✦')
+    await ui.advance(100)
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0]).toContain('nothing to ask from yet')
+    expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog here.')
+
+    await pressOn(ui, '✦')
+    await ui.advance(2000)
+    expect(calls).toBe(2)
+    expect(await textIn(ui)).toBe('One cat, black, ✦ Black since birth. « « and dog here.')
+    await ui.unmount()
+  })
+
+  test('an answer with a stretch left open is not drawn', async ($, on) => {
+    const { toasts } = shows(on)
+    on('model.fork', () => ({ value: { isAnswered: true, text: 'It {{purrs|purrs when', usage: USAGE } }))
+    const ui = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(ui, 'cat')
+    await ui.advance(2000)
+    await pressOn(ui, '✦')
+    await ui.advance(100)
+    expect(toasts[0]).toContain('could not draw')
+    expect(await textIn(ui)).toBe('One cat, black, « ✦ and dog here.')
+    await ui.unmount()
+  })
+
+  test('the next prompt tells the model what ✦ added outside the transcript', async ($, on) => {
+    shows(on)
+    const text = 'One {{cat|cat, black,}} and {{dog|dog, brown,}} here.'
+    on('session.messages', () => ({
+      value: [
+        { role: 'user', text: 'pets?', toolUses: [] },
+        { role: 'assistant', text, toolUses: [] },
+      ],
+    }))
+    let context: readonly string[] | undefined
+    on('prompt.submit', ($, e) => {
+      context = e.context
+      return { text: e.text, context: e.context }
+    })
+    const fork = answering(on, 'She is {{nine|nine years old}}.')
+    const ui = await mountReply($, FULLSCREEN, text)
+    await pressOn(ui, 'cat')
+    await ui.advance(2000)
+    await pressOn(ui, '✦')
+    fork.release()
+    await ui.advance(2000)
+    await $.prompt.submit({ text: 'ok', wait: false, origin: { kind: 'composer' } })
+    expect(context).toEqual([
+      'Stretchtext: since your last reply the reader opened "cat". They did not open "dog".',
+      'Stretchtext: the reader pressed ✦ for more depth, and you answered outside the transcript: after "…cat, black," you added "She is {{nine|nine years old}}.".',
+    ])
+
+    // Told once: the prompt after it carries no note of it.
+    await $.prompt.submit({ text: 'and?', wait: false, origin: { kind: 'composer' } })
+    expect(context?.some(note => note.includes('✦'))).toBe(false)
+    await ui.unmount()
+  })
+
+  test('an answer stays open when the reply is drawn again', async ($, on) => {
+    shows(on)
+    const fork = answering(on, 'More.')
+    const first = await mountReply($, FULLSCREEN, PETS)
+    await pressOn(first, 'cat')
+    await first.advance(2000)
+    await pressOn(first, '✦')
+    fork.release()
+    await first.advance(2000)
+    await first.unmount()
+
+    const again = await mountReply($, FULLSCREEN, PETS)
+    expect(await textIn(again)).toBe('One cat, black, ✦ More. « ✦ « and dog here.')
+    await again.unmount()
+  })
+
+  test('in the desktop app, ✦ is a link of its own, and the answer opens where it lands', async ($, on) => {
+    shows(on)
+    const prompts: string[] = []
+    on('model.fork', (_, e) => {
+      prompts.push(e.prompt)
+      return { value: { isAnswered: true, text: 'More.', usage: USAGE } }
+    })
+    const text = 'One {{cat|cat, black,}} here.'
+    const ui = await mountReply($, FULLSCREEN, text, 'desktop')
+    await ui.press({ key: 'stretch', link: { href: `${HREF}open/0` } })
+    expect(await shown(ui)).toBe(`One cat, black, [«](${HREF}close/0) [✦](${HREF}deepen/0) here.`)
+
+    await ui.press({ key: 'stretch', link: { href: `${HREF}deepen/0` } })
+    expect(prompts).toHaveLength(1)
+    expect(await shown(ui)).toBe(`One cat, black, ✦ More. [«](${HREF}close/1) [✦](${HREF}deepen/1) [«](${HREF}close/0) here.`)
+    await ui.unmount()
+  })
+})
+
+describe('parse for ✦', () => {
+  test('only an open stretch with no stretch left inside it to open can be deepened', async () => {
+    const [outer, inner] = stretches(parse('{{a|a, b{{ c| c, d}}}}'))
+    if (outer === undefined || inner === undefined) throw new Error('two stretches')
+    expect(canDeepen(outer, [outer.key])).toBe(false)
+    expect(canDeepen(inner, [outer.key])).toBe(false)
+    expect(canDeepen(inner, [outer.key, inner.key])).toBe(true)
+  })
+
+  test("an answer goes at the end of its stretch's long form, its stretches keyed under it", async () => {
+    const segments = withAdded(parse('{{a|a, b}} end'), { a: { status: 'done', text: 'More {{c|c, d}}.' } })
+    expect(stretches(segments).map(stretch => stretch.key)).toEqual(['a', 'a › ✦', 'a › ✦ › c'])
+    expect(sectionOf(segments, 'a › ✦ › c')).toEqual({ key: 'a › ✦ › c', text: 'c, d', under: ['a'] })
+    // A running or failed query adds nothing.
+    expect(stretches(withAdded(parse('{{a|a, b}}'), { a: { status: 'running', ask: 1 } }))).toHaveLength(1)
   })
 })

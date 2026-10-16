@@ -5,8 +5,10 @@
 import { closesFence, drawnAs, isRule, openingFence } from './parse'
 import type { Segment, Stretch } from './parse'
 
-/** What a press on a pressable phrase does to its stretch. */
-export type Action = 'open' | 'close'
+/** What a press on a short form or a « does to its stretch. */
+export type Toggle = 'open' | 'close'
+/** What a press on a pressable phrase does to its stretch: a Toggle, or `deepen`, which asks Claude for more on it. */
+export type Action = Toggle | 'deepen'
 
 export type Run = {
   text: string
@@ -17,6 +19,8 @@ export type Run = {
   dim?: true
   /** The colour of the words a stretch added. */
   tint?: string
+  /** Drawn on a background: the section a press on ✦ would send. */
+  lit?: true
   link?: { action: Action; key: string }
   /** Where a markdown link or a bare URL goes, drawn as a hyperlink. */
   href?: string
@@ -43,6 +47,8 @@ const SEP = '\ufdd1'
 const END = '\ufdd2'
 const TINT = '\ufdd3'
 const TINT_END = '\ufdd4'
+const LIT = '\ufdd5'
+const LIT_END = '\ufdd6'
 
 // A mark drawn on the letter before it, or a character no terminal draws, takes no cell.
 const ZERO_WIDTH = /[\p{Mn}\p{Me}\p{Default_Ignorable_Code_Point}]/u
@@ -69,12 +75,17 @@ export const HEADING = /^#{1,6}\s+(.*)$/
 export const QUOTE = /^>\s?(.*)$/
 export const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
 
-/** A line's text without its tint marks, and the tint of each character left. */
-type Line = { text: string; tints: (string | undefined)[] }
+/** A line's text without its marks, and the tint of each character left and whether it is lit. */
+type Line = { text: string; tints: (string | undefined)[]; lits: boolean[] }
 
 /** `word` drawn in `colour`. */
 export function tint(colour: string, word: string): string {
   return `${TINT}${colour}${SEP}${word}${TINT_END}`
+}
+
+/** `text` drawn on a background, across the lines it takes. */
+export function lit(text: string): string {
+  return `${LIT}${text}${LIT_END}`
 }
 
 /** Whether a word is markdown syntax rather than text: a bullet, a list number, a rule, a fence, a pipe, a heading mark. */
@@ -112,8 +123,10 @@ export function layout(text: string, columns: number): Row[] {
   const width = Math.max(10, columns)
   const rows: Row[] = []
   let fence: string | undefined
+  // A lit section can span lines, so whether it is lit carries from one line to the next.
+  const carry = { isLit: false }
   for (const marked of text.split('\n')) {
-    const line = untint(marked)
+    const line = untint(marked, carry)
     if (fence !== undefined) {
       if (closesFence(line.text, fence)) fence = undefined
       else rows.push(...cutRows([{ text: `  ${line.text}`, code: true }], width))
@@ -132,7 +145,7 @@ export function layout(text: string, columns: number): Row[] {
 
 /**
  * The phrase drawn at cell `x` of row `y`, if any. A one-cell `«` is hard to land on, so a press
- * a cell beside a closer counts as on it.
+ * a cell beside a closer counts as on it, and a cell past a ✦ as on that.
  */
 export function linkAt(rows: Row[], x: number, y: number): Run['link'] {
   const spans: { from: number; to: number; link: Run['link'] }[] = []
@@ -145,7 +158,10 @@ export function linkAt(rows: Row[], x: number, y: number): Run['link'] {
   const exact = spans.find(span => x >= span.from && x < span.to)?.link
   if (exact !== undefined) return exact
 
-  return spans.find(span => span.link?.action === 'close' && x >= span.from - 1 && x < span.to + 1)?.link
+  return (
+    spans.find(span => span.link?.action === 'close' && x >= span.from - 1 && x < span.to + 1)?.link ??
+    spans.find(span => span.link?.action === 'deepen' && x >= span.from && x < span.to + 1)?.link
+  )
 }
 
 /**
@@ -207,13 +223,15 @@ export function breakables(text: string): string[] {
 }
 
 /**
- * A line without its tint marks, so its markdown is read from the text alone: a stretch tints the
- * words it adds one at a time, so a code span or a link label can hold several. A space takes the
- * tint before it, so a tinted phrase stays one run.
+ * A line without its tint and lit marks, so its markdown is read from the text alone: a stretch
+ * tints the words it adds one at a time, so a code span or a link label can hold several. A space
+ * takes the tint before it, so a tinted phrase stays one run. `carry` says whether the line starts
+ * lit, and is left saying whether the next one does.
  */
-function untint(marked: string): Line {
+function untint(marked: string, carry: { isLit: boolean }): Line {
   let text = ''
   const tints: Line['tints'] = []
+  const lits: boolean[] = []
   let tinted: string | undefined
   for (let i = 0; i < marked.length; i++) {
     const ch = marked[i] ?? ''
@@ -223,18 +241,24 @@ function untint(marked: string): Line {
       i = sep
     } else if (ch === TINT_END) {
       tinted = undefined
+    } else if (ch === LIT || ch === LIT_END) {
+      carry.isLit = ch === LIT
     } else {
       tints.push(ch === ' ' && tinted === undefined ? tints.at(-1) : tinted)
+      lits.push(carry.isLit)
       text += ch
     }
   }
 
-  return { text, tints }
+  return { text, tints, lits }
 }
 
-function rowsOf({ text: line, tints }: Line, width: number): Row[] {
+function rowsOf({ text: line, tints, lits }: Line, width: number): Row[] {
   // The runs of the line's end from `rest` on.
-  const inlineOf = (rest: string, isBold = false) => inline(rest, tints.slice(line.length - rest.length), isBold)
+  const inlineOf = (rest: string, isBold = false) => {
+    const from = line.length - rest.length
+    return inline(rest, { tints: tints.slice(from), lits: lits.slice(from) }, isBold)
+  }
   if (line.trim() === '') return [[]]
   if (isRule(line)) return [[{ text: '─'.repeat(Math.min(width, 60)), dim: true }]]
   // A table row keeps its columns: written as is, cut where the region ends.
@@ -253,8 +277,8 @@ function rowsOf({ text: line, tints }: Line, width: number): Row[] {
   return wrap(inlineOf(line.slice(indent.length)), width, indent, indent)
 }
 
-/** A line's inline markdown as runs: bold, italic, code spans, links, pressable phrases, each character in its tint. */
-function inline(text: string, tints: Line['tints'], isBold = false): Run[] {
+/** A line's inline markdown as runs: bold, italic, code spans, links, pressable phrases, each character in its tint and lit or not. */
+function inline(text: string, { tints, lits }: Pick<Line, 'tints' | 'lits'>, isBold = false): Run[] {
   const runs: Run[] = []
   let bold = isBold
   let italic = false
@@ -268,6 +292,7 @@ function inline(text: string, tints: Line['tints'], isBold = false): Run[] {
       ...(bold && { bold: true }),
       ...(italic && { italic: true }),
       ...(tint && { tint }),
+      ...(lits[at] === true && { lit: true }),
       ...(pressable && { link: pressable }),
       ...extra,
     }
@@ -281,7 +306,8 @@ function inline(text: string, tints: Line['tints'], isBold = false): Run[] {
     const first = ch === START ? text.indexOf(SEP, i + 1) : -1
     const second = first === -1 ? -1 : text.indexOf(SEP, first + 1)
     if (second !== -1) {
-      pressable = { action: text.slice(i + 1, first) === 'close' ? 'close' : 'open', key: text.slice(first + 1, second) }
+      const action = text.slice(i + 1, first)
+      pressable = { action: action === 'close' || action === 'deepen' ? action : 'open', key: text.slice(first + 1, second) }
       i = second + 1
       continue
     }
@@ -339,7 +365,7 @@ function inline(text: string, tints: Line['tints'], isBold = false): Run[] {
  * or a closing bracket it did not open.
  */
 function bareUrlAt(text: string, at: number): string | undefined {
-  let url = /^https?:\/\/[^\s<>`﷐-﷔]+/.exec(text.slice(at))?.[0]
+  let url = /^https?:\/\/[^\s<>`﷐-﷖]+/.exec(text.slice(at))?.[0]
   if (url === undefined) return undefined
   for (;;) {
     const opened = url.split('(').length - 1
@@ -460,7 +486,7 @@ function cut(text: string, room: number): [string, string] {
 
 function isSameStyle(a: Run, b: Run): boolean {
   return (
-    a.bold === b.bold && a.italic === b.italic && a.code === b.code && a.underline === b.underline && a.dim === b.dim && a.tint === b.tint &&
+    a.bold === b.bold && a.italic === b.italic && a.code === b.code && a.underline === b.underline && a.dim === b.dim && a.tint === b.tint && a.lit === b.lit &&
     a.link?.action === b.link?.action && a.link?.key === b.link?.key && a.href === b.href
   )
 }

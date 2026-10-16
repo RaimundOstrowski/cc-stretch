@@ -2,10 +2,28 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { ClassicEventOf, ClassicResultOf, EngineInterface, Register, RenderInput, RenderNode, SessionMessage } from 'claude-code'
 
 import { GUIDE } from './guide'
-import { closeAfter, codeSpan, hideLongForms, isLinkable, isOpenable, KEY_SEPARATOR, newStreamState, paragraphsOf, parentOf, parse, stretches } from './parse'
-import type { Segment, StreamState, Stretch } from './parse'
+import {
+  addedKeyOf,
+  canDeepen,
+  closeAfter,
+  codeSpan,
+  hideLongForms,
+  isAdded,
+  isLinkable,
+  isOpenable,
+  KEY_SEPARATOR,
+  newStreamState,
+  openText,
+  paragraphsOf,
+  parentOf,
+  parse,
+  sectionOf,
+  stretches,
+  withAdded,
+} from './parse'
+import type { Deepening, Query, Segment, StreamState, Stretch } from './parse'
 import { targetsIn } from './layout'
-import type { Action } from './layout'
+import type { Toggle } from './layout'
 import { contrastOn, hex, mix } from './contrast'
 import type { Hex, Rgb } from './contrast'
 import { isColour, isSameLook, lookOf, MARK_NAMES, marksSetting, storedLook, TINTED } from './look'
@@ -29,6 +47,8 @@ const streamCheckpoints = atom({ plugin: 'cc-stretch', key: 'streams' } as const
 // dark text on a light ground, as a selection does. No text colour is offered: links, code and the
 // words a click added already speak in colour.
 const SWATCHES = ['#264f78', '#1f3a5f', '#3b4261', '#4b3b6b', '#5c2a4a', '#5f2a2a', '#5c4a00', '#1e4d2b', '#1d4b4b'] as const
+const deepened = atom({ plugin: 'cc-stretch', key: 'deepened' } as const, {})
+const addedAnswers = atom({ plugin: 'cc-stretch', key: 'added' } as const, [])
 
 // Claude Code 2.1.300 can start a session on the main screen even with fullscreen set, and the
 // variable overrides that.
@@ -61,6 +81,8 @@ const HUES = BASE.dark.length
 const hueAfter = (count: number, parent: number | undefined) => (parent !== undefined && count % HUES === parent % HUES ? count + 1 : count)
 /** The colours (a palette entry) a count or a place picks, taken in turn. */
 const colourAt = <Entry,>(palette: readonly Entry[], n: number): Entry | undefined => palette[n % HUES]
+/** The background of the section a press on ✦ would send, a step off the terminal's own. */
+const LIT = { dark: '#2e3b4e', light: '#dbe7f5' }
 
 // Every link the mod draws is answered by the mod: a click opens or closes,
 // and the link is never followed. A ctrl- or cmd-click opens it in a browser,
@@ -79,7 +101,7 @@ const LETTERS = 'asdfghjklqwertyuiopzxcvbnm'
 // keybinding actions is pressed by that action's chords while no engine handler of it is mounted.
 // These two actions scroll the diff panel's file list, bound in its Global context to alt+down and
 // ctrl+down, and alt+up and ctrl+up.
-const CHORDS: Record<Action, string> = { open: 'app:diffFileListDown', close: 'app:diffFileListUp' }
+const CHORDS: Record<Toggle, string> = { open: 'app:diffFileListDown', close: 'app:diffFileListUp' }
 /** How many of the latest replies on screen holding a stretch take letters. */
 const LETTERED_REPLIES = 3
 /** How many of the latest replies drawn by Clients are kept, to find the ones that take letters. */
@@ -242,6 +264,79 @@ async function withClaim($: EngineInterface, holder: 'save' | 'close', run: () =
   }
 }
 
+// ✦ asks Claude for more on an open stretch with nothing left inside it to open. The query is a
+// fork of the session: the transcript, system prompt and model of the main thread, served from the
+// prompt cache, with no tools. So the answer is stretchtext in the reader's own output style, and
+// it stays out of the transcript; the next prompt tells Claude what it added.
+
+const DEEPEN_HINT = '✦ asks Claude for more on the lit text. It runs one model call.'
+/** The most of a section ✦ sends, and the longest answer it draws, in characters. */
+const SECTION_LIMIT = 4000
+const ANSWER_LIMIT = 6000
+/** How much of each answer the next prompt quotes back to Claude. */
+const NOTED_ANSWER = 600
+
+// The queries running, by `<request>#<element>#<stretch key>`. A Client posts each query again until
+// it sees the answer, so one already running here asks nothing more. One still marked running in
+// state but not here was cut by a reload and runs again.
+const asking = new Set<string>()
+
+async function deepen($: EngineInterface, requestId: string, element: string, query: Query): Promise<void> {
+  const id = `${requestId}#${element}#${query.key}`
+  if (asking.has(id)) return
+  asking.add(id)
+  try {
+    const member = memberOf(deepened, { requestId: `${requestId}#${element}` })
+    const was = (await read($, member))[query.key]
+    if (was?.status === 'done' || (was?.status === 'failed' && was.ask === query.ask)) return
+    const running: Deepening = { status: 'running', ask: query.ask }
+    await update($, member, all => ({ ...all, [query.key]: running }))
+    const reply = await $.model.fork({ prompt: promptFor(query) })
+    const text = reply.isAnswered ? answerOf(reply.text) : undefined
+    const result: Deepening = text === undefined ? { status: 'failed', ask: query.ask } : { status: 'done', text }
+    await update($, member, all => ({ ...all, [query.key]: result }))
+    if (text === undefined) {
+      $.ui.toast(failureOf(reply))
+      return
+    }
+    // Open where it lands, so a redraw keeps it open; the Client grows it in.
+    const key = addedKeyOf(query.key)
+    await update($, memberOf(openStretches, { requestId: `${requestId}#${element}` }), list => [...list.filter(k => k !== key), key])
+    await update($, addedAnswers, list => [...list, { after: query.text.split(/\s+/).slice(-8).join(' '), text }])
+  } finally {
+    asking.delete(id)
+  }
+}
+
+function promptFor({ text, under }: Query): string {
+  return [
+    'The reader pressed ✦ to ask for more on one part of a reply of yours above. With every stretch inside it open, that part reads:',
+    '',
+    '<part>',
+    text.slice(0, SECTION_LIMIT),
+    '</part>',
+    ...(under.length > 0 ? ['', `It sits inside the stretches ${under.map(short => `"${short}"`).join(' › ')}.`] : []),
+    '',
+    "Write the text that comes next inside that part. It is drawn right after the part's last word, so it must read on from there: one to three sentences that go deeper than the part does, as stretchtext, with stretches where more depth fits. Do not repeat or quote the part, and add no heading or preamble. Answer with that text alone.",
+  ].join('\n')
+}
+
+/** The answer as it is drawn, or undefined when it is empty, too long, or holds a stretch left open. */
+function answerOf(text: string): string | undefined {
+  const answer = text.trim().replace(/^✦\s*/u, '')
+  if (answer === '' || answer.length > ANSWER_LIMIT) return undefined
+
+  return stretches(parse(answer)).every(stretch => stretch.isClosed) ? answer : undefined
+}
+
+function failureOf(reply: Awaited<ReturnType<EngineInterface['model']['fork']>>): string {
+  if (reply.isAnswered) return 'cc-stretch: ✦ got an answer it could not draw: too long, or with a stretch left open.'
+  if (reply.reason === 'nothing-to-fork') return 'cc-stretch: ✦ has nothing to ask from yet. It works once Claude has answered in this session, also after a resume or /clear.'
+  if (reply.reason === 'api-error') return `cc-stretch: ✦ got no answer (API error ${reply.status}).`
+
+  return 'cc-stretch: ✦ got no answer.'
+}
+
 export const register: Register = (on, options) => {
   const baseLook = lookOf(options)
   // As of Claude Code 2.1.302, /cc-stretch:style is listed from commands/style.md and answered here;
@@ -357,6 +452,7 @@ export const register: Register = (on, options) => {
     if (e.origin.kind !== 'composer') return next(e)
 
     const opened = await read($, seen)
+    const answers = await read($, addedAnswers)
     // A stretch that is not a link is drawn open, so it is neither opened nor unopened.
     const written = stretches(parse(lastReply(await $.session.messages())))
       .filter(isLinkable)
@@ -365,17 +461,27 @@ export const register: Register = (on, options) => {
     await update($, seen, () => [])
     await update($, newestReply, () => '')
     await update($, lettering, () => null)
-    if (opened.length === 0 && unopened.length === 0) return next(e)
+    await update($, addedAnswers, () => [])
 
     const quote = (list: string[]) => list.map(s => `"${s}"`).join(', ')
-    // A prompt cannot tell whether the reply was drawn where clicks land, so with no clicks the
-    // note names both cases.
-    const note =
-      opened.length > 0
-        ? `Stretchtext: since your last reply the reader opened ${quote(opened)}.${unopened.length > 0 ? ` They did not open ${quote(unopened)}.` : ''}`
-        : 'Stretchtext: no click on a stretch of your last reply was recorded. The reader may have read only the short forms; where clicks do not reach the plugin (the classic renderer, apps other than the terminal and the Claude desktop app), every stretch was drawn open.'
+    const notes: string[] = []
+    if (opened.length > 0) {
+      notes.push(`Stretchtext: since your last reply the reader opened ${quote(opened)}.${unopened.length > 0 ? ` They did not open ${quote(unopened)}.` : ''}`)
+    } else if (unopened.length > 0 && answers.length === 0) {
+      // A prompt cannot tell whether the reply was drawn where clicks land, so with no clicks the
+      // note names both cases. A press on ✦ shows that they land.
+      notes.push(
+        'Stretchtext: no click on a stretch of your last reply was recorded. The reader may have read only the short forms; where clicks do not reach the plugin (the classic renderer, apps other than the terminal and the Claude desktop app), every stretch was drawn open.',
+      )
+    }
+    if (answers.length > 0) {
+      const cap = (text: string) => (text.length > NOTED_ANSWER ? `${text.slice(0, NOTED_ANSWER)}…` : text)
+      const each = answers.map(({ after, text }) => `after "…${after}" you added "${cap(text)}"`)
+      notes.push(`Stretchtext: the reader pressed ✦ for more depth, and you answered outside the transcript: ${each.join('; ')}.`)
+    }
+    if (notes.length === 0) return next(e)
 
-    return next({ ...e, context: [...(e.context ?? []), note] })
+    return next({ ...e, context: [...(e.context ?? []), ...notes] })
   }).catch(($, e, next) => next(e))
 
   // The reply that says why stretches are open on the main screen: the first drawn there since the
@@ -403,25 +509,34 @@ export const register: Register = (on, options) => {
     if (e.surface === 'desktop') {
       const { Markdown } = $.ui.resolve(e)
       const open = memberOf(openStretches, { requestId: `${e.requestId}#desktop` })
+      const asked = await read($, memberOf(deepened, { requestId: `${e.requestId}#desktop` }))
+      const drawnParts = withAdded(parse(text), asked)
+      const every = stretches(drawnParts)
       const links: string[] = []
-      const text = linkedMarkdown(parts, await read($, open), all, links)
-      // Open that stretch, or close it with every stretch inside it. Opening one is what the next
-      // prompt reports, as a press in the terminal is.
+      const markdown = linkedMarkdown(drawnParts, await read($, open), every, links, asked)
+      // Open that stretch, or close it with every stretch inside it, or ask Claude for more on it.
+      // Opening one is what the next prompt reports, as a press in the terminal is.
       const press = async (href: string) => {
         const [action, index] = href.slice(HREF.length).split('/')
-        const stretch = all[Number(index)]
+        const stretch = every[Number(index)]
         if (stretch === undefined) return
         const { key } = stretch
+        if (action === 'deepen') {
+          const section = sectionOf(drawnParts, key)
+          if (section !== undefined) await deepen($, e.requestId, 'desktop', { ...section, ask: Date.now() })
+          return
+        }
         if (action === 'close') {
           await update($, open, list => list.filter(k => k !== key && !k.startsWith(key + KEY_SEPARATOR)))
           return
         }
         if (action !== 'open') return
         await update($, open, list => (list.includes(key) ? list : [...list, key]))
+        if (isAdded(key)) return
         const short = stretch.short.trim()
         await update($, seen, list => (list.includes(short) ? list : [...list, short]))
       }
-      return <Markdown key="stretch" text={text} pressableLinks={links} onLinkPress={link => void press(link.href)} />
+      return <Markdown key="stretch" text={markdown} pressableLinks={links} onLinkPress={link => void press(link.href)} />
     }
 
     const marker = e.props.isFirstOfReply ? '⏺ ' : '  '
@@ -452,7 +567,11 @@ export const register: Register = (on, options) => {
       const parts = await Promise.all(
         paragraphs.map(async ({ hasStretch, text, key, member }) => {
           if (!hasStretch) return <Markdown text={text} />
-          const [open, ask] = await Promise.all([read($, memberOf(openStretches, { requestId: member })), read($, memberOf(askedStretch, { requestId: member }))])
+          const [open, ask, asked] = await Promise.all([
+            read($, memberOf(openStretches, { requestId: member })),
+            read($, memberOf(askedStretch, { requestId: member })),
+            read($, memberOf(deepened, { requestId: member })),
+          ])
           const placed = places?.get(key)
           const tints = tintsOf(order, key, newest === e.requestId ? count - 1 : -1, palette, placed)
           const keys = Object.fromEntries((shown?.targets ?? []).filter(one => one.member === member).map(one => [one.key, one.letter]))
@@ -464,6 +583,8 @@ export const register: Register = (on, options) => {
             letters: shown === null ? null : { action: shown.action, keys },
             look: drawnLook,
             highlights: placed === undefined ? {} : highlightsOf(placed, palette),
+            deepened: asked,
+            lit: isLight ? LIT.light : LIT.dark,
           }
           return <Client key={key} module="./reply.tsx" props={props} width="100%" />
         }),
@@ -494,7 +615,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="row">
         <Text>{marker}</Text>
         <Box flexDirection="column" flexShrink={1}>
-          <Markdown text={writeOpen(parts)} />
+          <Markdown text={openText(parts)} />
           {isMainScreen(e) && notedRequest === e.requestId && <Text dimColor>{MAIN_SCREEN_NOTE}</Text>}
         </Box>
       </Box>
@@ -515,6 +636,9 @@ export const register: Register = (on, options) => {
     const post = e.module.endsWith('reply.tsx') ? replyPostOf(e.data) : undefined
     if (post === undefined) return next(e)
     await update($, memberOf(openStretches, { requestId: `${e.requestId}#${e.element}` }), () => post.open)
+    if (post.hover !== undefined) $.ui.status(post.hover === null ? undefined : DEEPEN_HINT)
+    // The query outlives this message: its answer comes back through state.
+    for (const query of post.queries ?? []) void deepen($, e.requestId, e.element, query).catch(() => $.ui.toast('cc-stretch: ✦ got no answer.'))
     const { opened } = post
     if (opened !== undefined) await update($, seen, list => (list.includes(opened.short) ? list : [...list, opened.short]))
 
@@ -560,7 +684,7 @@ export const register: Register = (on, options) => {
  * Puts up the letters for `action`, or puts them away when they already show for it or no stretch
  * in the latest replies on screen takes one.
  */
-async function showLetters($: EngineInterface, action: Action): Promise<void> {
+async function showLetters($: EngineInterface, action: Toggle): Promise<void> {
   const shown = await read($, lettering)
   const targets = shown?.action === action ? [] : await lettersFor($, action)
   await update($, lettering, () => (targets.length === 0 ? null : { action, targets }))
@@ -572,7 +696,7 @@ async function showLetters($: EngineInterface, action: Action): Promise<void> {
  * session's messages because Claude Code 2.1.301 draws a reply for the first time when it scrolls
  * into view.
  */
-async function lettersFor($: EngineInterface, action: Action): Promise<{ letter: string; member: string; key: string }[]> {
+async function lettersFor($: EngineInterface, action: Toggle): Promise<{ letter: string; member: string; key: string }[]> {
   // With their whitespace gone, no reply is found across two messages joined by a line break.
   const written = (await $.session.messages().catch(() => []))
     .filter(message => message.role === 'assistant' && message.text.includes('{{'))
@@ -664,18 +788,26 @@ function highlightsOf(places: ReadonlyMap<string, number>, palette: readonly { h
  * «, on a line of its own after a rule or a code fence. A link names its stretch by its place in `all`, not by its key, which can hold any character and
  * run past the 2048 characters a `pressableLinks` entry may have (Claude Code 2.1.295).
  */
-function linkedMarkdown(parts: Segment[], open: readonly string[], all: Stretch[], links: string[]): string {
+function linkedMarkdown(parts: Segment[], open: readonly string[], all: Stretch[], links: string[], asked: Readonly<Record<string, Deepening>>): string {
   return parts
     .map(part => {
       if (typeof part === 'string') return part
       if (!isOpenable(part) || part.long === undefined) return part.short
       // A short form over several lines is drawn open, or as written when its long form is empty.
-      if (!isLinkable(part)) return part.long.length === 0 ? part.short : linkedMarkdown(part.long, open, all, links)
+      if (!isLinkable(part)) return part.long.length === 0 ? part.short : linkedMarkdown(part.long, open, all, links, asked)
       const index = all.indexOf(part)
       if (open.includes(part.key)) {
         const close = `${HREF}close/${index}`
         links.push(close)
-        return closeAfter(linkedMarkdown(part.long, open, all, links), `[«](${close})`, '\n\n')
+        // An open stretch with nothing left inside it to open ends in ✦, which asks Claude for more.
+        let control = ''
+        if (canDeepen(part, open)) {
+          const deepen = `${HREF}deepen/${index}`
+          links.push(deepen)
+          control = ` [${asked[part.key]?.status === 'running' ? '✦…' : '✦'}](${deepen})`
+        }
+        const lead = isAdded(part.key) ? '✦ ' : ''
+        return closeAfter(lead + linkedMarkdown(part.long, open, all, links, asked), `[«](${close})${control}`, '\n\n')
       }
       const href = `${HREF}open/${index}`
       links.push(href)
@@ -702,20 +834,26 @@ function labelOf(short: string): string {
   return label + plain(short.slice(from))
 }
 
-/** A reply with every stretch drawn as its long form. */
-function writeOpen(parts: Segment[]): string {
-  return parts.map(part => (typeof part === 'string' ? part : part.long === undefined ? part.short : writeOpen(part.long))).join('')
-}
-
-/** A Client's post, if it is one: the open stretches, and the one just opened. */
+/**
+ * A Client's post, if it is one: the open stretches, the one just opened, the sections ✦ asked more
+ * on, and the stretch whose ✦ the pointer is on.
+ */
 function replyPostOf(data: unknown): ReplyPost | undefined {
   if (typeof data !== 'object' || data === null || !('open' in data) || !Array.isArray(data.open)) return undefined
-  const open = data.open.filter((key): key is string => typeof key === 'string')
+  const post: ReplyPost = { open: data.open.filter((key): key is string => typeof key === 'string') }
+  if ('queries' in data && Array.isArray(data.queries)) post.queries = data.queries.flatMap(query => (isQuery(query) ? [query] : []))
+  if ('hover' in data && (data.hover === null || typeof data.hover === 'string')) post.hover = data.hover
   const opened: unknown = 'opened' in data ? data.opened : undefined
-  if (typeof opened !== 'object' || opened === null || !('short' in opened) || !('key' in opened)) return { open }
+  if (typeof opened !== 'object' || opened === null || !('short' in opened) || !('key' in opened)) return post
   const { short, key } = opened
 
-  return typeof short === 'string' && typeof key === 'string' ? { open, opened: { short, key } } : { open }
+  return typeof short === 'string' && typeof key === 'string' ? { ...post, opened: { short, key } } : post
+}
+
+function isQuery(value: unknown): value is Query {
+  if (typeof value !== 'object' || value === null) return false
+  const { key, text, under, ask } = value as Record<string, unknown>
+  return typeof key === 'string' && typeof text === 'string' && typeof ask === 'number' && Array.isArray(under) && under.every(short => typeof short === 'string')
 }
 
 /** A Client's post of text to copy, if it is one. */

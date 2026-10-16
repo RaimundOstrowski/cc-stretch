@@ -201,6 +201,79 @@ export type StreamState = { open: { isLong: boolean }[]; fence: string | undefin
 /** A streaming filter's state before a reply's first flush. */
 export const newStreamState = (): StreamState => ({ open: [], fence: undefined, span: undefined })
 
+/** Segments as text with every stretch drawn as its long form. */
+export function openText(segments: Segment[]): string {
+  return segments.map(part => (typeof part === 'string' ? part : part.long === undefined ? part.short : openText(part.long))).join('')
+}
+
+// A press on ✦ asks Claude for more on an open stretch with no stretch left inside it to open. The
+// answer is a stretch of its own at the end of that stretch's long form: `✦` is its short form, so
+// once closed it opens again with no new query, and the answer's own stretches sit below it.
+
+/** The short form of a stretch that holds an answer ✦ asked for. */
+export const ADDED = '✦'
+
+/**
+ * What ✦ asked for one stretch: a query running, its answer, or a query that failed. `ask` names
+ * the press that asked, so a failure left from an earlier press does not end a later one.
+ */
+export type Deepening = { status: 'running'; ask: number } | { status: 'done'; text: string } | { status: 'failed'; ask: number }
+
+/** The key of the stretch that holds the answer ✦ asked for stretch `key`. */
+export function addedKeyOf(key: string): string {
+  return `${key}${KEY_SEPARATOR}${ADDED}`
+}
+
+/** Whether `key` names a stretch that holds an answer ✦ asked for. */
+export function isAdded(key: string): boolean {
+  return key.split(KEY_SEPARATOR).at(-1) === ADDED
+}
+
+/** Whether ✦ can ask for more on `stretch`: it is open, and no stretch inside it is left to open. */
+export function canDeepen(stretch: Stretch, open: readonly string[]): boolean {
+  return isLinkable(stretch) && open.includes(stretch.key) && !stretches(stretch.long ?? []).some(isLinkable)
+}
+
+/**
+ * Puts each answer ✦ asked for at the end of its stretch's long form, as a stretch keyed under it.
+ * Changes `segments` in place, as each `parse` makes them anew, and returns them.
+ */
+export function withAdded(segments: Segment[], deepened: Readonly<Record<string, Deepening>>): Segment[] {
+  for (const part of segments) {
+    if (typeof part === 'string' || part.long === undefined) continue
+    withAdded(part.long, deepened)
+    const asked = deepened[part.key]
+    if (asked?.status !== 'done') continue
+    const key = addedKeyOf(part.key)
+    const long = parse(asked.text)
+    for (const stretch of stretches(long)) stretch.key = `${key}${KEY_SEPARATOR}${stretch.key}`
+    const last = part.long.at(-1)
+    if (!(typeof last === 'string' && /\s$/.test(last))) part.long.push(' ')
+    part.long.push({ key, short: ADDED, long: withAdded(long, deepened), isClosed: true })
+  }
+
+  return segments
+}
+
+/** What ✦ sends for one stretch: its text with everything inside it open, and the short forms of the stretches around it. */
+export type Section = { key: string; text: string; under: string[] }
+
+/** A section ✦ asked more on, and which press asked. */
+export type Query = Section & { ask: number }
+
+export function sectionOf(segments: Segment[], key: string): Section | undefined {
+  const all = stretches(segments)
+  const stretch = all.find(one => one.key === key)
+  if (stretch?.long === undefined) return undefined
+  const under: string[] = []
+  for (let at = parentOf(key); at !== ''; at = parentOf(at)) {
+    const parent = all.find(one => one.key === at)
+    if (parent !== undefined && !isAdded(at)) under.unshift(parent.short.trim())
+  }
+
+  return { key, text: openText(stretch.long).trim(), under }
+}
+
 /**
  * A streaming reply's newly finished lines with each stretch shown as its short form, as the
  * finished reply will first show it. `state` carries open stretches, fences and code spans from one

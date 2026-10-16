@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- An open stretch with nothing left inside it to open ends in `✦`. A click asks Claude for more on
+  that part, through a fork of the session with no tools, and the answer grows in place after it,
+  in stretchtext, behind a `✦` of its own that closes and opens again with no new query. `✦` is
+  bold, in the theme's suggestion colour and not underlined, as it runs a query; the pointer on it
+  lights the text it would send and says so in the status line. The next prompt tells Claude what
+  each answer added ([#11](https://github.com/pro-vi/cc-stretch/issues/11)).
+
 ## 0.5.1 — 2026-10-19
 
 - A double-click in a paragraph that holds a stretch selects and copies the word under it, as
