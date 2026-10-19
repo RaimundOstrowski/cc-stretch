@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 — 2026-10-19
+
+- A double-click in a paragraph that holds a stretch selects and copies the word under it, as
+  Claude Code 2.1.303 does in a paragraph without one. Paths, flags and URLs come out whole,
+  `#12806` keeps its `#`, and a full stop after a word stays out
+  ([#15](https://github.com/pro-vi/cc-stretch/issues/15)). Contributed by @NansD in
+  [#16](https://github.com/pro-vi/cc-stretch/pull/16).
+- The plain cell 0.4.0 added after a paragraph that ends styled is gone. Nothing on screen changes.
+
 ## 0.5.0 — 2026-10-17
 
 - You choose how closed stretches look. In the terminal's fullscreen layout, `/cc-stretch:style`
