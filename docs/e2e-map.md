@@ -7,7 +7,7 @@ clicked, and text in such a paragraph is selected by the plugin itself.
 
 | Environment | Reach | Ready when | Which build | Accounts | May write | Started by |
 |---|---|---|---|---|---|---|
-| local | `claude --plugin-dir <package> --settings '{"enabledPlugins":{"cc-stretch@cc-stretch":false}}'`, run with `CLAUDE_CODE_NO_FLICKER=1` in a WezTerm pane of 100 × 30 | the prompt's `❯` drawn under a rule | `<package>` is `git archive <sha>` of the commit under test, without `tests/` | the Claude Code login already on the machine | the clipboard, through a drag: save its text first and put it back; the user's settings file, through the style toolbar's save: the checks put it back | you, or a `film/e2e/` check |
+| local | `claude --plugin-dir <package> --settings '{"enabledPlugins":{"cc-stretch@cc-stretch":false}}'`, run with `CLAUDE_CODE_NO_FLICKER=1` in a WezTerm pane of 100 × 30 | the prompt's `❯` drawn under a rule | `<package>` is `git archive <sha>` of the commit under test, without `tests/` | the Claude Code login already on the machine | the clipboard, through a drag or a double-click: save its text first and put it back; the user's settings file, through the style toolbar's save: the checks put it back | you, or a `film/e2e/` check |
 
 There is no staging or production: the plugin runs only inside a reader's own Claude Code.
 
@@ -61,11 +61,14 @@ into `<outDir>`, and exits 1 if a step failed; `node film/e2e/render.mjs <outDir
 
 ### Select text in a paragraph that holds a stretch
 
-- **Reach:** a press away from a stretch, dragged, inside such a paragraph.
+- **Reach:** a press away from a stretch, dragged, or two on one word, inside such a paragraph.
 - **Drive:**
   1. Press, move with the button held, release inside the paragraph: the cells crossed are drawn
      inverse and their text is on the clipboard.
   2. Move the pointer into the paragraph and out of it: the highlight goes.
+  3. Click a word twice, the presses less than 500 ms and at most a cell apart: the word is drawn
+     inverse and on the clipboard. It is the word Claude Code 2.1.303 takes in a paragraph without
+     a stretch, except that `#` stays in it and any full stops after it stay out.
 - **Writes:** the clipboard; save its text first and put it back.
 - **Gotchas:** the paragraph hears the pointer leave only after it has heard it inside, so a driver
   that only sends a motion outside never clears a highlight.
