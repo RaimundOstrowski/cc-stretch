@@ -1,7 +1,8 @@
 // Compares guides on one frozen set of real replies. Each guide (an arm) rewrites every reply in the
 // corpus, several times; each rewrite is then measured: how much of it the reader sees first, where
-// its stretches add words around the short form, how many short forms are only labels, and how many
-// of the reply's must-know points a blind reader of the shortest version still takes away.
+// its stretches add words around the short form, how many short forms are only labels (also among
+// the links that hide sections or a list, and the one that hides the closing status block), and how
+// many of the reply's must-know points a blind reader of the shortest version still takes away.
 //   bun bench/ab.ts corpus --per-project 15 <~/.claude/projects/<dir>>...      freezes bench/out/corpus.jsonl
 //   bun bench/ab.ts run --out <dir> --arm <variant>... [--repeats 3] [--writer haiku]
 //                        [--judge haiku|none] [--effort <level>] [--concurrency 4] [--limit n]
@@ -38,8 +39,8 @@ import { VARIANTS } from './guides.ts'
 import { differences, messageOf, readManifest, rowsOf } from './manifest.ts'
 import type { Manifest } from './manifest.ts'
 import { draw, marked, recall, render, VALID_RECALL, words } from './measure.ts'
-import { adjudicate, isRuleId, verdictsOf } from './rules.ts'
-import type { Override, RuleId } from './rules.ts'
+import { adjudicate, hiddenIn, isRuleId, verdictsOf } from './rules.ts'
+import type { Hidden, Override, RuleId } from './rules.ts'
 import { readTask, stringsOf, TASKS } from './tasks.ts'
 import type { Task } from './tasks.ts'
 import { turnsOf } from './transcripts.ts'
@@ -588,6 +589,10 @@ function override() {
 /** A grade row of a tasks run, read back as strictly as its judge answers were. */
 type Graded = { labels: number; linksInView: number; skim: { know: Grade[]; never: Claim[] }; full: { know: Grade[]; defer: Grade[]; never: Claim[] } }
 
+/** Whether a stored value is the judge's verdict on each of `count` links in view, as `readLabels` first read it. */
+const isLabels = (value: unknown, count: number): value is Label[] =>
+  Array.isArray(value) && value.length === count && value.every(v => v === 'gist' || v === 'label')
+
 /** A successful grade row read back; a malformed one is an error, never a score of nothing. */
 function gradedOf(row: unknown, task: Task): Graded {
   const labels = get(row, 'labels'), linksInView = get(row, 'linksInView'), skim = get(row, 'skim'), full = get(row, 'full')
@@ -779,15 +784,18 @@ function report() {
   const judged = new Map(rows(join(out, 'judged.jsonl')).filter(isOk).map(row => {
     const pointCount = points.get(String(get(row, 'id')))?.length, labels = get(row, 'labels'), linksInView = get(row, 'linksInView')
     if (pointCount === undefined || typeof labels !== 'number' || typeof linksInView !== 'number') throw new Error(`the judgment of ${keyOf(row)} is malformed`)
-    return [keyOf(row), { labels, linksInView, verdicts: gradesOf(get(row, 'verdicts'), pointCount, 'verdicts') }] as const
+    // A run judged before the judge's verdict on each link was kept has none; one that has them reads them strictly.
+    const labelVerdicts = get(row, 'labelVerdicts')
+    if (labelVerdicts !== undefined && !isLabels(labelVerdicts, linksInView)) throw new Error(`the judgment of ${keyOf(row)} is malformed`)
+    return [keyOf(row), { labels, linksInView, verdicts: gradesOf(get(row, 'verdicts'), pointCount, 'verdicts'), labelVerdicts }] as const
   }))
   const pct = (x: number) => shown(x, 1, true)
   const repeats = repeatsOf(run)
 
-  /** A reply's rewrite measured, with its judgment, for one arm and repeat. */
+  /** A reply's rewrite measured, with its judgment and what each link in view hides, for one arm and repeat. */
   const lookup = (arm: string, rep: number, id: string) => {
     const reply = replies.get(id), text = rewrites.get(at(arm, rep, id)), j = judged.get(at(arm, rep, id))
-    return reply === undefined || text === undefined || j === undefined ? undefined : { s: shape(reply.reply, text), j }
+    return reply === undefined || text === undefined || j === undefined ? undefined : { s: shape(reply.reply, text), j, hides: marked(text).longs.map(hiddenIn) }
   }
   // A reply counts only where every arm has a judged rewrite in every repeat, so arms meet the same replies.
   const counted = [...replies.keys()].filter(id => arms.every(arm => repeats.every(rep => judged.has(at(arm, rep, id)) && rewrites.has(at(arm, rep, id)))))
@@ -796,10 +804,17 @@ function report() {
   const broken = [...rewrites].filter(([k, text]) => shape(replies.get(k.split('|')[2] ?? '')?.reply ?? '', text).recall < VALID_RECALL).length
   console.log(`${rewriteRows.length} rewrite attempts: ${failedCalls} failed calls, ${broken} broken rewrites (kept under ${VALID_RECALL * 100}% of the content words)\n`)
 
-  const metrics = ['skim share', 'right-only stretches', 'words added left', 'words added middle', 'colon titles', 'labels', 'top-3 points carried', 'all points carried'] as const
+  const metrics = ['skim share', 'right-only stretches', 'words added left', 'words added middle', 'colon titles', 'labels', 'labels on sections or lists', 'labels on the status block', 'top-3 points carried', 'all points carried'] as const
+  /** The judge's verdicts on the links in view that hide `body`, in `found`'s rewrites. */
+  /** The counted replies' measures for one arm and repeat. */
+  const foundIn = (arm: string, repeat: number) => counted.flatMap(id => lookup(arm, repeat, id) ?? [])
+  /** The judge's verdicts on the links in view that hide `what`. */
+  const verdictsOn = (found: ReturnType<typeof foundIn>, what: Hidden) =>
+    found.flatMap(r => r.j.labelVerdicts?.filter((_, i) => r.hides[i] === what) ?? [])
+  const labelShare = (verdicts: Label[]) => mean(verdicts.map(v => (v === 'label' ? 1 : 0)))
   // Each arm and repeat's measures, worked out once.
   const perRun = (arm: string, repeat: number) => {
-    const found = counted.flatMap(id => lookup(arm, repeat, id) ?? [])
+    const found = foundIn(arm, repeat)
     const added = found.reduce((a, r) => a + r.s.sides.before + r.s.sides.between + r.s.sides.after, 0)
     const links = found.reduce((a, r) => a + r.s.links, 0)
     const inView = found.reduce((a, r) => a + r.j.linksInView, 0)
@@ -810,6 +825,8 @@ function report() {
       'words added middle': found.reduce((a, r) => a + r.s.sides.between, 0) / added,
       'colon titles': found.reduce((a, r) => a + r.s.colon, 0) / links,
       labels: found.reduce((a, r) => a + r.j.labels, 0) / inView,
+      'labels on sections or lists': labelShare(verdictsOn(found, 'sections')),
+      'labels on the status block': labelShare(verdictsOn(found, 'status block')),
       'top-3 points carried': mean(found.map(r => mean(r.j.verdicts.slice(0, 3).map(score)))),
       'all points carried': mean(found.map(r => mean(r.j.verdicts.map(score)))),
     }
@@ -825,6 +842,12 @@ function report() {
     console.log(`| ${m} (%) | ${cells.join(' | ')} |`)
   }
   console.log('\nEach cell: the mean of the repeats, ± how much the repeats differ (standard deviation).')
+  if ([...judged.values()].some(j => j.labelVerdicts === undefined)) console.log('Some judgments keep no verdict per link, so the two rows on what links hide leave them out.')
+  console.log('Links in view that hide sections or a list, and that hide the status block, over all repeats:')
+  for (const arm of arms) {
+    const found = repeats.flatMap(rep => foundIn(arm, rep))
+    console.log(`- ${arm}: ${verdictsOn(found, 'sections').length} on sections or lists, ${verdictsOn(found, 'status block').length} on the status block`)
+  }
 }
 
 await chosen.run()

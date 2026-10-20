@@ -5,6 +5,7 @@ import { GUIDE } from '../hooks/guide.ts'
 
 const AFTER_LONG = '- The long form must read correctly in the short form'
 const AFTER_SHORTEST = '- At its shortest, the reply is one to three short sentences'
+const AFTER_CLOSING = '- If other instructions require a closing block'
 
 const GROW = `- Grow inside the sentence where you can. The best stretch adds a qualifier before a word, a clause between two words and a detail after them, so the short form reads as the same sentence with less in it. A stretch that only adds text after its short form reads like a heading and its body, and the reader has to open it to learn anything. Example: "{{The fix keys the cache on the lockfile.|The fix, in \`ci/cache.ts\`, keys the CI cache on the lockfile as well as \`package.json\`, so a dependency bump no longer reuses a stale cache.}}"`
 const FILLER = `- Keep the shortest reading to what the reader needs: the answer, what they must decide or do, and the results. Hedges, reasons, background, caveats, restatements and courtesy go inside long forms, where a reader who wants them finds them.`
@@ -67,6 +68,10 @@ const RECIPES: Readonly<Record<string, readonly (readonly [anchor: string, line:
   'headings-outside': [[AFTER_SHORTEST, LIST], [LIST, '- Keep topic headings as ordinary text. Make the statement beneath each heading a stretch.']],
   /** Draft the reply in thinking first, and choose each short form's words there. */
   'draft-in-thinking': [[AFTER_LONG, '- Draft the reply in your thinking first, as plain sentences with all their detail, and choose there the words each detail grows around. Then write the reply from the draft, opening each stretch before those words: a stretch opens before its short form, so a sentence already written can no longer become one.']],
+  /** A stretch that hides several sections or a list gets a one-line gist for its short form, as the closing block does. */
+  'sections-gist': [[AFTER_CLOSING, '- A stretch that hides several sections or a list needs a short form of the same kind: a one-line gist of what they say, never a line that only names them.']],
+  /** Keep sections in view, as list items are, so no one stretch hides several. */
+  'sections-within': [[LIST, '- Stretch within each section, never around several sections at once.']],
 }
 
 const additions = Object.fromEntries(

@@ -3,6 +3,7 @@
 // verdicts are not stored: a report computes them from the saved answers, so a corrected rule
 // rescores every earlier run. Whether the skim tells the reader what they need is a model's
 // judgment instead, in grading.ts.
+// It also holds `hiddenIn`, which is no rule: the corpus report uses it to tell what a link hides.
 import { growthOf } from '../hooks/grow.ts'
 import { HEADING, LIST_ITEM, QUOTE, TABLE_ROW } from '../hooks/layout.ts'
 import { drawnAs, isOpenable, isRule, parse, stretches } from '../hooks/parse.ts'
@@ -210,3 +211,21 @@ export function adjudicate(verdict: RuleVerdict, overrides: readonly Override[],
 
 /** Whether `id` names a rule. */
 export const isRuleId = (id: string): id is RuleId => RULES.some(rule => rule.id === id)
+
+/** What a link can hide besides plain text: the reply's closing status block, or several sections or a list. */
+export type Hidden = 'status block' | 'sections'
+
+/**
+ * What a link hides, read from its opened long form: the closing status block (a line that starts
+ * `**MISSION**`), sections or a list (two or more lines led by bold text, or three or more list
+ * items), or neither. In live replies Opus 5.5 wrote under Claude Code 2.1.302, most links that
+ * hid sections had a label for a short form, and links that hid the status block, whose short form
+ * the guide asks to be a one-line gist, did not.
+ */
+export function hiddenIn(long: string): Hidden | undefined {
+  if (/^[ \t]*\*\*MISSION\*\*/m.test(long)) return 'status block'
+  const lines = long.split('\n')
+  const led = lines.filter(line => /^\*\*[^*]+\*\*/.test(LIST_ITEM.exec(line)?.[3] ?? line.trimStart())).length
+  const items = lines.filter(line => LIST_ITEM.test(line)).length
+  return led >= 2 || items >= 3 ? 'sections' : undefined
+}

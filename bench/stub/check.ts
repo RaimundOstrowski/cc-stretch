@@ -145,7 +145,7 @@ const rewritten = rowsIn(corpusRun, 'rewrites.jsonl').length
 check('a corpus run rewrites only replies whose points exist, and exits 1', r.status === 1 && ok(corpusRun, 'points.jsonl') === 1 && rewritten === 1 && ok(corpusRun, 'judged.jsonl') === 1, r.output)
 r = run()
 const corpusReport = bench(['report', '--out', corpusRun, '--corpus', corpusFile])
-check('a resume finishes the corpus run, and its report reads both replies', r.status === 0 && ok(corpusRun, 'judged.jsonl') === 2 && corpusReport.status === 0 && corpusReport.output.includes('2 of 2 replies judged'), `${r.output}\n${corpusReport.output}`)
+check('a resume finishes the corpus run, and its report reads both replies', r.status === 0 && ok(corpusRun, 'judged.jsonl') === 2 && corpusReport.status === 0 && corpusReport.output.includes('labels on sections or lists') && corpusReport.output.includes('on the status block') && corpusReport.output.includes('2 of 2 replies judged'), `${r.output}\n${corpusReport.output}`)
 
 // One run at a time per folder: a lock held by a live process refuses a second, and one left by a
 // process that has gone is taken over.

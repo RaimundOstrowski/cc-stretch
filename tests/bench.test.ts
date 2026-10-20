@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { measure, openedFrom, render, words } from '../bench/measure.ts'
 import { growthOf } from '../hooks/grow.ts'
 import { parse } from '../hooks/parse.ts'
-import { adjudicate, verdictsOf } from '../bench/rules.ts'
+import { adjudicate, hiddenIn, verdictsOf } from '../bench/rules.ts'
 import type { RuleId } from '../bench/rules.ts'
 import { readChecks, readKey, readLabels, readPoints, resultOf } from '../bench/grading.ts'
 import { differences, readManifest, rowsOf } from '../bench/manifest.ts'
@@ -43,6 +43,17 @@ describe('benchmark measures', () => {
   test('reads the opened stretches back from a reading note', async () => {
     expect([...openedFrom('Stretchtext: since your last reply the reader opened "a b", "c". They did not open "d".')]).toEqual(['a b', 'c'])
     expect(openedFrom('Stretchtext: the reader opened no stretch of your last reply.').size).toBe(0)
+  })
+
+  test('tells a long form that holds sections or the status block from one that holds neither', async () => {
+    const status = 'Status: built, not pushed.\n\n---\n\n**MISSION** · x — y\n\n- [x] Built the thing\n- [ ] Push it\n- [ ] Tag it'
+    expect(hiddenIn(status)).toBe('status block')
+    expect(hiddenIn('Why it turned it down:\n\n- **One.** A.\n- **Two.** B.')).toBe('sections')
+    expect(hiddenIn('\n\n**What the lens found.** A gap.\n\n**What I did.** Closed it.')).toBe('sections')
+    expect(hiddenIn('Three steps:\n1. a\n2. b\n3. c')).toBe('sections')
+    expect(hiddenIn('Three steps:\n+ a\n+ b\n1) c')).toBe('sections')
+    expect(hiddenIn('Two steps:\n1. a\n2. b')).toBe(undefined)
+    expect(hiddenIn('The cache is keyed by **the lockfile** and **the platform**.')).toBe(undefined)
   })
 })
 
