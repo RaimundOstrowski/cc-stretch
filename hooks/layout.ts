@@ -164,6 +164,18 @@ export function linkAt(rows: Row[], x: number, y: number): Run['link'] {
   )
 }
 
+/** Where the hyperlink drawn at cell `x` of row `y` goes, if one is drawn there. */
+export function hrefAt(rows: Row[], x: number, y: number): string | undefined {
+  let at = 0
+  for (const run of rows[y] ?? []) {
+    const w = widthOf(run.text)
+    if (x >= at && x < at + w) return run.href
+    at += w
+  }
+
+  return undefined
+}
+
 /**
  * Cells a string takes: none for a mark drawn on the letter before it (a Thai vowel written above or
  * below a letter, a tone mark, an accent) or a character no terminal draws, such as a joiner; two for

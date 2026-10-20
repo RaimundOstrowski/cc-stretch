@@ -73,6 +73,20 @@ into `<outDir>`, and exits 1 if a step failed; `node film/e2e/render.mjs <outDir
 - **Gotchas:** the paragraph hears the pointer leave only after it has heard it inside, so a driver
   that only sends a motion outside never clears a highlight.
 
+### Open a hyperlink in a paragraph that holds a stretch
+
+- **Reach:** a reply whose paragraph holds a stretch and a URL; ask for "a link to the docs and one
+  stretch" in the prompt.
+- **Drive:**
+  1. Ctrl-click or alt-click the URL (underlined in the suggestion colour): the browser opens it,
+     nothing is selected, and no stretch opens.
+  2. Cmd-click it: the terminal opens its OSC 8 link itself, without the plugin.
+  3. Click it plainly: nothing opens; a drag from there selects as anywhere in the paragraph.
+- **Writes:** nothing in the repo; the browser opens a page.
+- **Gotchas:** which modifiers reach the session is the terminal's choice: as of Ghostty 1.2 a
+  cmd-click is kept by the terminal and a ctrl-click is sent; WezTerm sends a ctrl-click unless
+  `bypass_mouse_reporting_modifiers` names CTRL.
+
 ### The style toolbar
 
 - **Reach:** `/cc-stretch:style`; typing `/cc-stretch` lists it. `film/e2e/style.mjs` and

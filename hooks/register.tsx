@@ -337,6 +337,26 @@ function failureOf(reply: Awaited<ReturnType<EngineInterface['model']['fork']>>)
   return 'cc-stretch: ✦ got no answer.'
 }
 
+// A hyperlink in a paragraph a Client draws is an OSC 8 span the terminal opens on its own click, a
+// cmd-click where the terminal keeps that; a ctrl- or alt-click reaches the Client, which cannot
+// open it, so the hooks module opens it as Claude Code 2.1.304 opens one in a paragraph it draws.
+
+/** The command that opens a URL on this machine, found once: `open` on macOS, `start` on Windows, `xdg-open` elsewhere. */
+let opener: Promise<readonly string[]> | undefined
+function openerOf($: EngineInterface): Promise<readonly string[]> {
+  return $.process.run(['uname', '-s']).then(
+    ({ stdout }) => (stdout.trim() === 'Darwin' ? ['open'] : ['xdg-open']),
+    () => ['cmd', '/c', 'start', ''],
+  )
+}
+
+/** Opens `href` as the machine opens a URL, and says so when it could not. */
+async function follow($: EngineInterface, href: string): Promise<void> {
+  const argv = await (opener ??= openerOf($))
+  const ran = await $.process.run([...argv, href]).catch(() => undefined)
+  if (ran === undefined || ran.exitCode !== 0) $.ui.toast(`cc-stretch: could not open ${href}`)
+}
+
 export const register: Register = (on, options) => {
   const baseLook = lookOf(options)
   // As of Claude Code 2.1.302, /cc-stretch:style is listed from commands/style.md and answered here;
@@ -633,6 +653,12 @@ export const register: Register = (on, options) => {
       if (!copied.isCopied) $.ui.toast(`cc-stretch: the selection was not copied: ${copied.reason}`)
       return next(e)
     }
+    // A hyperlink the reader ctrl- or alt-clicked in such a paragraph.
+    const followed = e.module.endsWith('reply.tsx') ? followOf(e.data) : undefined
+    if (followed !== undefined) {
+      void follow($, followed)
+      return next(e)
+    }
     const post = e.module.endsWith('reply.tsx') ? replyPostOf(e.data) : undefined
     if (post === undefined) return next(e)
     await update($, memberOf(openStretches, { requestId: `${e.requestId}#${e.element}` }), () => post.open)
@@ -854,6 +880,13 @@ function isQuery(value: unknown): value is Query {
   if (typeof value !== 'object' || value === null) return false
   const { key, text, under, ask } = value as Record<string, unknown>
   return typeof key === 'string' && typeof text === 'string' && typeof ask === 'number' && Array.isArray(under) && under.every(short => typeof short === 'string')
+}
+
+/** A Client's post of a hyperlink to open, if it is one: an `http:`, `https:` or `file:` target, as the layout draws. */
+function followOf(data: unknown): string | undefined {
+  if (typeof data !== 'object' || data === null || !('follow' in data)) return undefined
+  const { follow } = data
+  return typeof follow === 'string' && /^(https?|file):/.test(follow) ? follow : undefined
 }
 
 /** A Client's post of text to copy, if it is one. */

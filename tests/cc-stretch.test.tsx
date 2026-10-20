@@ -821,6 +821,95 @@ describe('selecting text', () => {
   })
 })
 
+describe('hyperlinks', () => {
+  const DOCS = 'Docs at https://x.invalid/docs and {{a stretch|a long stretch}}.'
+  /** Runs each command the plugin starts as macOS would, and keeps what was run. */
+  const commands = (on: On, exitCode = 0) => {
+    const ran: string[][] = []
+    on('process.run', (_, e) => {
+      ran.push([...e.argv])
+      const stdout = e.argv[0] === 'uname' ? 'Darwin\n' : ''
+      return { value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    })
+    return ran
+  }
+  /** What the plugin toasts. */
+  const toasts = (on: On) => {
+    const said: string[] = []
+    on('ui.toast', (_, e) => {
+      said.push(e.text)
+      return { value: undefined }
+    })
+    return said
+  }
+  /** Clicks cell `at` with a modifier held, as a mouse does: down, then up. */
+  const clickWith = async (ui: Mounted, at: { x: number; y: number }, modifier: { ctrl?: true; alt?: true }, key = FIRST) => {
+    await ui.pointer({ type: 'down', ...at, button: 'left', ...modifier, in: key })
+    await ui.pointer({ type: 'up', ...at, button: 'left', ...modifier, in: key })
+  }
+  /** The commands run apart from the one that finds the machine's opener, which runs once per load. */
+  const opened = (ran: string[][]) => ran.filter(argv => argv[0] !== 'uname')
+
+  test('a ctrl- or alt-click on a hyperlink opens it with the machine\'s own opener, and selects nothing', async ($, on) => {
+    const ran = commands(on)
+    const copies = clipboard(on)
+    const ui = await mountReply($, FULLSCREEN, DOCS)
+    // "Docs at https://x.invalid/docs and a stretch."
+    await clickWith(ui, { x: 10, y: 0 }, { ctrl: true })
+    expect(opened(ran)).toEqual([['open', 'https://x.invalid/docs']])
+    expect(ran.filter(argv => argv[0] === 'uname').length).toBeLessThanOrEqual(1)
+    await clickWith(ui, { x: 28, y: 0 }, { alt: true })
+    expect(opened(ran)).toEqual([['open', 'https://x.invalid/docs'], ['open', 'https://x.invalid/docs']])
+    expect(copies).toEqual([])
+    expect((await ui.findAll({ type: 'Text', in: FIRST })).some(piece => piece.props.inverse === true)).toBe(false)
+    await ui.unmount()
+  })
+
+  test('a plain click on a hyperlink opens nothing, and a drag across it still copies', async ($, on) => {
+    const ran = commands(on)
+    const copies = clipboard(on)
+    const ui = await mountReply($, FULLSCREEN, DOCS)
+    await drag(ui, { x: 10, y: 0 }, { x: 10, y: 0 })
+    await drag(ui, { x: 8, y: 0 }, { x: 30, y: 0 })
+    expect(opened(ran)).toEqual([])
+    expect(copies).toEqual(['https://x.invalid/docs'])
+    await ui.unmount()
+  })
+
+  test('a modified click away from a hyperlink acts as a plain one: on a short form it opens the stretch', async ($, on) => {
+    const ran = commands(on)
+    const ui = await mountReply($, FULLSCREEN, DOCS)
+    await clickWith(ui, { x: 36, y: 0 }, { ctrl: true })
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('Docs at https://x.invalid/docs and a long stretch « ✦.')
+    expect(opened(ran)).toEqual([])
+    await ui.unmount()
+  })
+
+  test('a link inside a short form opens on a modified click, and the stretch on a plain one', async ($, on) => {
+    const ran = commands(on)
+    const ui = await mountReply($, FULLSCREEN, 'Read {{the [guide](https://x.invalid/g)|the [guide](https://x.invalid/g), part two}} now.')
+    // "Read the guide now."
+    await clickWith(ui, { x: 10, y: 0 }, { alt: true })
+    expect(opened(ran)).toEqual([['open', 'https://x.invalid/g']])
+    expect(await textIn(ui)).toBe('Read the guide now.')
+    await pressOn(ui, 'guide')
+    await ui.advance(2000)
+    expect(await textIn(ui)).toBe('Read the guide, part two « ✦ now.')
+    await ui.unmount()
+  })
+
+  test('a hyperlink that could not be opened is said so', async ($, on) => {
+    commands(on, 1)
+    const said = toasts(on)
+    const ui = await mountReply($, FULLSCREEN, DOCS)
+    await clickWith(ui, { x: 10, y: 0 }, { ctrl: true })
+    await ui.advance(100)
+    expect(said).toEqual(['cc-stretch: could not open https://x.invalid/docs'])
+    await ui.unmount()
+  })
+})
+
 test('a paragraph drawn with props from the version before, which had no ask or letters, still draws', () => {
   // What a first draw reads of its surface; Reply is called directly, as no mount hands it chosen props.
   const surface = {

@@ -117,7 +117,9 @@ never lose your place.
   crosses is drawn inverse and copied when the button comes up, and it stays within that paragraph.
   A double-click there selects and copies the word under it, as Claude Code 2.1.303 does in a
   paragraph without a stretch, except that the `#` of an id such as `#12806` stays in the word and
-  any full stops after it stay out.
+  any full stops after it stay out. A ctrl- or alt-click on a hyperlink there opens it, as Claude
+  Code 2.1.304 does in a paragraph without a stretch; a cmd-click, where the terminal keeps it, is
+  the terminal's own.
 - Claude writes every level up front, so a reply costs about as many tokens as before. You read
   less; you don't pay less.
 - The `{{short|long}}` markup shows as raw text wherever the plugin isn't loaded.

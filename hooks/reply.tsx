@@ -1,7 +1,7 @@
 import type { ClientModule, ClientPointerEvent, ClientSurface, TextProps } from 'claude-code'
 
 import { grow, lengthOf } from './grow'
-import { continuationOf, isMarkup, layout, link, linkAt, lit, targetsIn, tint, widthOf } from './layout'
+import { continuationOf, hrefAt, isMarkup, layout, link, linkAt, lit, targetsIn, tint, widthOf } from './layout'
 import type { Row, Run, Toggle } from './layout'
 import { ADDED, addedKeyOf, canDeepen, closeAfter, isAdded, isLinkable, KEY_SEPARATOR, parse, sectionOf, stretches, withAdded } from './parse'
 import { DEFAULT_LOOK, drawsHighlight, lookProps } from './look'
@@ -55,6 +55,9 @@ export type ReplyPost = { open: string[]; opened?: { short: string; key: string 
 
 /** What the instance posts to the hooks module when the reader drags across its text: the text, for the clipboard. */
 export type CopyPost = { copy: string }
+
+/** What the instance posts when the reader ctrl- or alt-clicks a hyperlink: where it goes, for the hooks module to open. */
+export type FollowPost = { follow: string }
 
 /**
  * A run as drawn: a letter over the first character of a short form or a «, or the rest of that
@@ -269,7 +272,8 @@ function lettered(rows: Row[], letters: Letters | null): DrawnRun[][] {
  * of Claude Code 2.1.302 a Client holds the pointer from a press until its release and the transcript
  * selects nothing meanwhile, so a drag from anywhere else selects here: the cells it crosses are
  * highlighted, and on release their text goes to the clipboard. A double-click selects here too,
- * taking the URL or word under it at once.
+ * taking the URL or word under it at once. A ctrl- or alt-click on a hyperlink opens it, as Claude
+ * Code 2.1.304 opens one in a paragraph it draws itself; a cmd-click is the terminal's own.
  */
 function pointer(surface: ClientSurface<State>, event: ClientPointerEvent) {
   const state = surface.state
@@ -277,6 +281,11 @@ function pointer(surface: ClientSurface<State>, event: ClientPointerEvent) {
   if (state === undefined || shown === undefined) return
   const { selection } = state
   if (event.type === 'down' && event.button === 'left') {
+    const href = event.ctrl === true || event.alt === true ? hrefAt(shown.rows, event.x, event.y) : undefined
+    if (href !== undefined) {
+      surface.post({ follow: href } satisfies FollowPost)
+      return
+    }
     const target = linkAt(shown.rows, event.x, event.y)
     if (target?.action === 'deepen') {
       query(surface, target.key)

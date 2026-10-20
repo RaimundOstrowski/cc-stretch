@@ -8,6 +8,11 @@
   bold, in the theme's suggestion colour and not underlined, as it runs a query; the pointer on it
   lights the text it would send and says so in the status line. The next prompt tells Claude what
   each answer added ([#11](https://github.com/pro-vi/cc-stretch/issues/11)).
+- A ctrl- or alt-click on a hyperlink in a paragraph that holds a stretch opens it, as Claude Code
+  2.1.304 opens one in a paragraph without a stretch; a cmd-click, where the terminal keeps it, was
+  the terminal's own already. A plain click still selects, as elsewhere in the transcript. The link
+  is opened with `open` on macOS and `xdg-open` elsewhere, and a toast says when that failed
+  ([#18](https://github.com/pro-vi/cc-stretch/issues/18)).
 
 ## 0.5.1 — 2026-10-19
 
